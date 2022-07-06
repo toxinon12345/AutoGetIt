@@ -1,13 +1,15 @@
 unit ufrmAutoGetItMain;
 
 interface  USES
-  RegexProxy, Winapi.CommCtrl,
-  RegularExpressions, RegularExpressionsCore, Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
+  Generics.Collections, RegexProxy, RegularExpressions, RegularExpressionsCore,
+  Winapi.CommCtrl,  Winapi.Windows, Winapi.Messages, System.SysUtils,
+  System.Variants, System.Classes, Vcl.Graphics,
   Vcl.Controls, Vcl.Forms, Vcl.Dialogs, System.Actions, Vcl.ActnList,
   System.ImageList, Vcl.ImgList, Vcl.StdCtrls, Vcl.Buttons, Vcl.ExtCtrls,
-  DosCommand, Vcl.CheckLst, Vcl.ComCtrls, Vcl.Menus, Vcl.Mask;
+  DosCommand, Vcl.CheckLst, Vcl.ComCtrls, Vcl.Menus, Vcl.Mask
+  ;
 
-type
+TYPE
   TfrmAutoGetItMain = class(TForm)
     pnlTop: TPanel;
     btnRefresh: TBitBtn;
@@ -62,9 +64,9 @@ type
     procedure rgrpSortByClick(Sender: TObject);
     procedure StatusBarDblClick(Sender: TObject);
     function GetPanelIndex( Point: TPoint ): Integer;
+    procedure cmbRADVersionsSelect(Sender: TObject);
+    function cmbParse() : integer;
   private
-    const
-      BDS_USER_ROOT = '\Software\Embarcadero\BDS\';
     type
       TGetItArgsFunction = reference to function (const GetItName: string): string;
     var
@@ -89,114 +91,98 @@ type
     property ExecLine: string write SetExecLine;
   end;
 
-var
+VAR
   frmAutoGetItMain: TfrmAutoGetItMain;
-  MyReProxy1: TMyRegexProxy;
-  MyReProxy2: TMyRegexProxy;
-  myRePattern: string = 'BDS ([^\x20]+) \x7C Delphi ([^\x20]+) (\w+)';
-  myRePattern2: string = '@SET ([^\x20]+)=(.*)';
-  getItUrl : string = 'https://getit-104.embarcadero.com';
+  BDS_USER_ROOTS : string = '\Software\Embarcadero\BDS\';
+  BDS_VERSIONSS : TArray<string> = ['19.0', '20.0', '21.0', '22.0'];
+  DELPHI_NAMESS : TArray<string> = ['10.2 Tokyo', '10.3 Rio', '10.4 Sydney', '11 Alexandria'];
+  switch_dispatch : Integer = 0;
+  //================================================
+  MyReProxy1 : TMyRegexProxy;
+  MyReProxy2 : TMyRegexProxy;
+  myRePattern : string = 'BDS ([^\x20]+) | Delphi ([^\x20]+) (\w+)';
+  myRePattern2 : string = '@SET ([^\x20]+)=(.*)';
+  getItUrl : string = 'https://getit.embarcadero.com';
+  // getItUrl : string = 'https://getit-104.embarcadero.com';
 
 
 implementation USES
   UEnvVars,
-  System.Diagnostics, System.Win.Registry, System.StrUtils, System.IOUtils,
+  Diagnostics, Win.Registry, StrUtils, IOUtils,
   ufrmInstallLog;
 
 {$R *.dfm}
 
 CONST
   GETIT_VR_NOT_SUPPORTED_MSG = 'This version of Delphi''s GetItCmd.exe is not supported.';
-
-procedure TfrmAutoGetItMain.FormCreate(Sender: TObject);
+//===================================================================================================
+procedure TfrmAutoGetItMain.FORMCREATE(Sender: TObject);
 begin
   LoadRADVersionsCombo;
   lbPackages.Items.Clear;
 
   var AutoGetItDir := GetCurrentDir();
-  if FileExists( 'rsvars.bat' ) then begin
-    var myRsVars : TextFile;   var myRsLine: string;  AssignFile( myRsVars, 'rsvars.bat' );   Reset( myRsVars );
+    var FilePaths := ['','',''] ;
+    FilePaths[0] := TPath.Combine( AutoGetItDir, 'rsvars.bat' ) ;
+    FilePaths[1] := TPath.Combine( BDSBinDir, 'rsvars.bat' ) ;
+
+  If FileExists( FilePaths[0] ) Then FilePaths[2] := FilePaths[0]  else FilePaths[2] := FilePaths[1] ;
+
+    {$REGION 'ENV_VARS'}
+      var myStringList := TStringList.Create ;      myStringList.LoadFromFile( FilePaths[2], TEncoding.UTF8 ) ;
       MyReProxy2.Open( myRePattern2, [roIgnoreCase] );
+      MyReProxy2.ResolveMatches( myStringList.Text );
 
-     While not Eof(myRsVars) do begin
-       ReadLn(myRsVars, myRsLine);
-       MyReProxy2.ResolveForEach_old_safe( myRsLine );
-       //   MyReProxy2.GroupItem.Value
-       DebugPrint( '>>> %s = %s',  [MyReProxy2.GroupCol.Item[1].Value, MyReProxy2.GroupCol.Item[2].Value ] );
-       SetEnvVarValue( MyReProxy2.GroupCol.Item[1].Value, ExpandEnvVars(MyReProxy2.GroupCol.Item[2].Value) );
-     End;
-    CloseFile( myRsVars );
-  end;
-
-
-
+      For var I in Range(0,Length(MyReProxy2.RegexGroupPath.FVals),2) Do begin
+        var EnvName  := MyReProxy2.RegexGroupPath.FVals[I+0].Value ;
+        var EnvValue := MyReProxy2.RegexGroupPath.FVals[I+1].Value ;
+        SetEnvVarValue( EnvName, ExpandEnvVars(EnvValue) );
+      End;
+    {$ENDREGION}
 
    var reg := TRegistry.Create;
     try
       reg.RootKey := HKEY_CURRENT_USER;
-      var SubKey := BDS_USER_ROOT + SelectedBDSVersion() + '\CatalogRepository';
+      var SubKey := BDS_USER_ROOTS + SelectedBDSVersion() + '\CatalogRepository';
       var KeyExists := reg.OpenKey( SubKey, False);
       var serviceKind := reg.ReadString('ServiceKind');
-      if KeyExists and (serviceKind = 'Online') then begin
-        StatusBar.Panels[3].Text := reg.ReadString('ServiceUrl');
-      end
-      else if KeyExists and (serviceKind = 'Offline') then begin
-        StatusBar.Panels[3].Text :=  reg.ReadString('ServicePath');
-      end;
+
+      if      KeyExists and (serviceKind = 'Online')  then
+        StatusBar.Panels[3].Text := reg.ReadString('ServiceUrl')
+      else if KeyExists and (serviceKind = 'Offline') then
+        StatusBar.Panels[3].Text :=  reg.ReadString('ServicePath') ;
     finally
       reg.Free;
     end;
 
-
-
 end;
-
+//===================================================================================================
 function TfrmAutoGetItMain.GetItInstallCmd(const GetItPackageName: string): string;
 begin
 
+  case cmbParse() of
+    1: Result := Format('-accept_eulas -i"%s"', [GetItPackageName]) ;
+    2: Result := Format('-ae -i="%s"', [GetItPackageName]) ;
+    3: Result := Format('-ae -i="%s"', [GetItPackageName]) ;
+  else
+    raise ENotImplemented.Create(GETIT_VR_NOT_SUPPORTED_MSG);
+  end;
 
-    var switch_dispatch : Integer;
-    MyReProxy1.Open( myRePattern, [roIgnoreCase] );
-    MyReProxy1.ResolveForEach_old_safe( cmbRADVersions.Text );
-
-    if MyReProxy1.GroupCol.Item[1].Value = '19.0' then switch_dispatch := 1;   // BDS 19 | Delphi 10.2 Tokyo
-    if MyReProxy1.GroupCol.Item[1].Value = '20.0' then switch_dispatch := 1;   // BDS 20 | Delphi 10.3 Rio
-    if MyReProxy1.GroupCol.Item[1].Value = '21.0' then switch_dispatch := 2;   // BDS 21 | Delphi 10.4 Sydney
-    if MyReProxy1.GroupCol.Item[1].Value = '22.0' then switch_dispatch := 3;   // BDS 22 | Delphi 11.0 Alexandria
-
-
-  if switch_dispatch = 1 then
-    Result := Format('-accept_eulas -i"%s"', [GetItPackageName])
-  else if switch_dispatch = 2 then                                begin
-    Result := Format('-ae -i="%s"', [GetItPackageName]);          end
-  else if switch_dispatch = 3 then                                begin
-    Result := Format('-ae -i="%s"', [GetItPackageName]);          end
-  else                                                            begin
-    raise ENotImplemented.Create(GETIT_VR_NOT_SUPPORTED_MSG);     end;
 end;
-
+//===================================================================================================
 function TfrmAutoGetItMain.GetItUninstallCmd(const GetItPackageName: string): string;
-var  switch_dispatch : Integer;
 begin
-    MyReProxy1.Open( myRePattern, [roIgnoreCase] );
-    MyReProxy1.ResolveForEach_old_safe( cmbRADVersions.Text );
 
-    if MyReProxy1.GroupCol.Item[1].Value = '19.0' then switch_dispatch := 1;   // BDS 19 | Delphi 10.2 Tokyo
-    if MyReProxy1.GroupCol.Item[1].Value = '20.0' then switch_dispatch := 1;   // BDS 20 | Delphi 10.3 Rio
-    if MyReProxy1.GroupCol.Item[1].Value = '21.0' then switch_dispatch := 2;   // BDS 21 | Delphi 10.4 Sydney
-    if MyReProxy1.GroupCol.Item[1].Value = '22.0' then switch_dispatch := 3;   // BDS 22 | Delphi 11.0 Alexandria
+  case cmbParse() of
+    1: Result := Format('-u"%s"', [GetItPackageName])  ;
+    2: Result := Format('-u="%s"', [GetItPackageName]) ;
+    3: Result := Format('-u="%s"', [GetItPackageName]) ;
+  else
+    raise ENotImplemented.Create(GETIT_VR_NOT_SUPPORTED_MSG);
+  end;
 
-
-  if switch_dispatch = 1 then
-    Result := Format('-u"%s"', [GetItPackageName])
-  else if switch_dispatch = 2 then                                begin
-    Result := Format('-u="%s"', [GetItPackageName]);              end
-  else if switch_dispatch = 3  then                               begin
-    Result := Format('-u="%s"', [GetItPackageName]);              end
-  else                                                            begin
-    raise ENotImplemented.Create(GETIT_VR_NOT_SUPPORTED_MSG);     end;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.lbPackagesClick(Sender: TObject);
 begin
   actInstallOne.Enabled := (lbPackages.ItemIndex > -1) and (lbPackages.ItemIndex < lbPackages.Items.Count);
@@ -210,7 +196,7 @@ begin
     actUninstallOne.Caption := 'Uninstall ...';
   end;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.actInstallCheckedExecute(Sender: TObject);
 begin
   actInstallChecked.Enabled := False;
@@ -225,7 +211,7 @@ begin
     actRefresh.Enabled := True;
   end;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.actUninstallCheckedExecute(Sender: TObject);
 begin
   actUninstallChecked.Enabled := False;
@@ -240,7 +226,7 @@ begin
     actRefresh.Enabled := True;
   end;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.actInstallOneExecute(Sender: TObject);
 begin
   actInstallOne.Enabled := False;
@@ -257,7 +243,7 @@ begin
     actRefresh.Enabled := True;
   end;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.actUninstallOneExecute(Sender: TObject);
 begin
   actUninstallOne.Enabled := False;
@@ -273,13 +259,11 @@ begin
     actRefresh.Enabled := True;
   end;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.actRefreshExecute(Sender: TObject);
-var
-  SortField: string;
-  CmdLineArgs: string;
-  switch_dispatch : Integer;
 begin
+  var SortField: string;
+  var CmdLineArgs: string;
   actRefresh.Enabled := False;
   try
     lbPackages.Items.Clear;
@@ -294,35 +278,17 @@ begin
 
     DosCommand.CurrentDir := BDSBinDir();
 
-//    var parseCombo: String :=
-    MyReProxy1.Open( myRePattern, [roIgnoreCase] );
-    MyReProxy1.ResolveForEach_old_safe( cmbRADVersions.Text );
-
-    if MyReProxy1.GroupCol.Item[1].Value = '19.0' then switch_dispatch := 1;   // BDS 19 | Delphi 10.2 Tokyo
-    if MyReProxy1.GroupCol.Item[1].Value = '20.0' then switch_dispatch := 1;   // BDS 20 | Delphi 10.3 Rio
-    if MyReProxy1.GroupCol.Item[1].Value = '21.0' then switch_dispatch := 2;   // BDS 21 | Delphi 10.4 Sydney
-    if MyReProxy1.GroupCol.Item[1].Value = '22.0' then switch_dispatch := 3;   // BDS 22 | Delphi 11.0 Alexandria
-
-    if switch_dispatch = 1 then
-      CmdLineArgs := Format('-listavailable:%s -sort:%s -filter:%s ', [edtNameFilter.Text, SortField,
-                          IfThen(chkInstalledOnly.Checked, 'Installed', 'All')])
-    else if switch_dispatch = 2 then                                                  begin
-      CmdLineArgs := Format('--list=%s --sort=%s --filter=%s', [
-                          edtNameFilter.Text, SortField,
-                          IfThen(chkInstalledOnly.Checked, 'installed', 'all')]);     end
-    else if switch_dispatch = 3 then                                                  begin
-      CmdLineArgs := Format('--list=%s --sort=%s --filter=%s', [
-                          edtNameFilter.Text, SortField,
-                          IfThen(chkInstalledOnly.Checked, 'installed', 'all')]);     end
-    else                                                                              begin
-      raise ENotImplemented.Create(GETIT_VR_NOT_SUPPORTED_MSG);                       end;
-
+     var Filter := IfThen(chkInstalledOnly.Checked, 'Installed', 'All') ;
+    case cmbParse() of
+      1: CmdLineArgs := Format( '-listavailable:%s -sort:%s -filter:%s ', [edtNameFilter.Text, SortField, Filter] ) ;
+      2: CmdLineArgs := Format( '--list=%s --sort=%s --filter=%s', [edtNameFilter.Text, SortField, Filter] ) ;
+      3: CmdLineArgs := Format( '--list=%s --sort=%s --filter=%s', [edtNameFilter.Text, SortField, Filter] ) ;
+      else
+        raise ENotImplemented.Create(GETIT_VR_NOT_SUPPORTED_MSG);
+    end;
 
     DosCommand.CommandLine := 'GetItCmd.exe ' + CmdLineArgs;
-//    DosCommand.CommandLine := 'winver';
-
     ExecLine := DosCommand.CommandLine;
-
 
     Screen.Cursor := crHourGlass;
     try
@@ -330,7 +296,7 @@ begin
       CmdTime.Start;
 
       DosCommand.Execute;
-      repeat
+      Repeat
         Application.ProcessMessages;
       until FFinished;
       CleanPackageList;
@@ -348,17 +314,14 @@ begin
     actRefresh.Enabled := True;
   end;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.actSaveCheckedListExecute(Sender: TObject);
-var
-  GetItName: string;
-  CheckedList: TStringList;
 begin
-  CheckedList := TStringList.Create;
+  var CheckedList := TStringList.Create;
   try
-    for var i := 0 to lbPackages.Count - 1 do
+    for var i in [0 .. lbPackages.Count - 1] do
       if lbPackages.Checked[i] then begin
-        GetItName := ParseGetItName(lbPackages.Items[i]);
+        var GetItName := ParseGetItName(lbPackages.Items[i]);
         CheckedList.Add(GetItName);
       end;
 
@@ -369,13 +332,10 @@ begin
     CheckedList.Free;
   end;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.actLoadCheckedListExecute(Sender: TObject);
-var
-  GetItPos: Integer;
-  CheckedList: TStringList;
 begin
-  CheckedList := TStringList.Create;
+  var CheckedList := TStringList.Create;
   try
     FileOpenDialogSavedChecks.FileName := 'AutoGetIt for RAD Studio ' + cmbRADVersions.Text;
     if FileOpenDialogSavedChecks.Execute then begin
@@ -391,8 +351,8 @@ begin
           end;
       end;
 
-      for var i := 0 to CheckedList.Count - 1 do begin
-        for GetItPos := 0 to lbPackages.Items.Count - 1 do
+      for var i in [0 .. CheckedList.Count - 1] do begin
+        for var GetItPos in [0 .. lbPackages.Items.Count - 1] do
           if StartsText(CheckedList[i], lbPackages.Items[GetItPos]) then
             lbPackages.Checked[GetItPos] := True;
       end;
@@ -401,35 +361,35 @@ begin
     CheckedList.Free;
   end;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.actCheckAllExecute(Sender: TObject);
 begin
   lbPackages.CheckAll(TCheckBoxState.cbChecked);
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.actUncheckAllExecute(Sender: TObject);
 begin
   lbPackages.CheckAll(TCheckBoxState.cbUnchecked);
 end;
-
+//===================================================================================================
 function TfrmAutoGetItMain.BDSBinDir: string;
 begin
   Result := TPath.Combine( BDSRootPath( SelectedBDSVersion() ), 'bin');
 end;
-
+//===================================================================================================
 function TfrmAutoGetItMain.BDSRootPath(const BDSVersion: string): string;
 begin
   var reg := TRegistry.Create;
   try
     reg.RootKey := HKEY_CURRENT_USER;
 
-    if reg.OpenKey(BDS_USER_ROOT + BDSVersion, False) then
+    if reg.OpenKey(BDS_USER_ROOTS + BDSVersion, False) then
       Result := reg.ReadString('RootDir');
   finally
     reg.Free;
   end;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.CleanPackageList;
 { Not sure if there's a bug in DosCommand or what but the list of packages
   often contains cut-off entries that are then completed on the next line,
@@ -437,28 +397,46 @@ procedure TfrmAutoGetItMain.CleanPackageList;
   deletes those partial entries by checking to see if the previous line
   is the start of the current line.
 }
-var
-  LastPackage: string;
 begin
-  LastPackage := EmptyStr;
-  for var i := lbPackages.Count - 1 downto 1 do begin
-    LastPackage := lbPackages.Items[i-1];
+  var LastPackage := EmptyStr;
+  For var I in Range(lbPackages.Count-1, 0, -1) do begin    // Checkpoint
+    LastPackage := lbPackages.Items[I-1];
 
     if (LastPackage.Length > 0) and StartsText(LastPackage, lbPackages.Items[i]) then
       lbPackages.Items.Delete(i - 1)
     else
   end;
 end;
+//===================================================================================================
+function TfrmAutoGetItMain.cmbParse() : integer;
+begin
+    var switch_dispatch : Integer ;
+    MyReProxy1.Open( myRePattern, [roIgnoreCase] );
+    MyReProxy1.ResolveMatches( cmbRADVersions.Text );
 
+    var version := TArray<TGroup>( MyReProxy1.RegexGroupPath.FVals)[0] ;
+    if version.Value = '19.0' then switch_dispatch := 1;   // BDS 19 | Delphi 10.2 Tokyo
+    if version.Value = '20.0' then switch_dispatch := 1;   // BDS 20 | Delphi 10.3 Rio
+    if version.Value = '21.0' then switch_dispatch := 2;   // BDS 21 | Delphi 10.4 Sydney
+    if version.Value = '22.0' then switch_dispatch := 3;   // BDS 22 | Delphi 11.0 Alexandria
+
+    Result := switch_dispatch ;
+end;
+//===================================================================================================
+procedure TfrmAutoGetItMain.cmbRADVersionsSelect(Sender: TObject);
+begin
+
+end;
+//===================================================================================================
 function TfrmAutoGetItMain.CountChecked: Integer;
 begin
   Result := 0;
-  for var i := 0 to lbPackages.Count - 1 do
+  for var i in [0 .. lbPackages.Count - 1] do
     if lbPackages.Checked[i] then
       Result := Result + 1;
 end;
 
-procedure TfrmAutoGetItMain.DosCommandNewLine(ASender: TObject; const ANewLine: string; AOutputType: TOutputType);
+procedure TfrmAutoGetItMain.DosCommandNewLine( ASender: TObject; const ANewLine: string; AOutputType: TOutputType );
 begin
   if not FPastFirstItem then begin
     if StartsText('--', ANewLine) then
@@ -469,17 +447,13 @@ begin
     if lbPackages.Items.IndexOf(ANewLine) = -1 then
       lbPackages.Items.Add(ANewLine);
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.DosCommandTerminated(Sender: TObject);
 begin
   FFinished := True;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.LoadRADVersionsCombo;
-const
-  MAX_VERSIONS = 4;
-  BDS_VERSIONS: array[1..MAX_VERSIONS] of string = ('19.0', '20.0', '21.0', '22.0');
-  DELPHI_NAMES: array[1..MAX_VERSIONS] of string = ('10.2 Tokyo', '10.3 Rio', '10.4 Sydney', '11 Alexandria');
 begin
   cmbRADVersions.Items.Clear;
 
@@ -488,11 +462,11 @@ begin
     reg.RootKey := HKEY_CURRENT_USER;
 
     // find and list all versions of RAD studio installed
-    for var i := 1 to MAX_VERSIONS do
-      if reg.OpenKey(BDS_USER_ROOT + BDS_VERSIONS[i], False) then begin
+    for var i in [1 .. Length(BDS_VERSIONSS) ] do
+      if reg.OpenKey(BDS_USER_ROOTS + BDS_VERSIONSS[i], False) then begin
         // make sure a root path is listed before adding this version
-        if Length(BDSRootPath(BDS_VERSIONS[i])) > 0 then
-          cmbRADVersions.Items.Insert(0, 'BDS ' + BDS_VERSIONS[i] + ' | Delphi ' + DELPHI_NAMES[i]);
+        if Length(BDSRootPath(BDS_VERSIONSS[i])) > 0 then
+          cmbRADVersions.Items.Insert(0, 'BDS ' + BDS_VERSIONSS[i] + ' | Delphi ' + DELPHI_NAMESS[i]);
       end;
 
     if cmbRADVersions.Items.Count > 0 then
@@ -506,27 +480,23 @@ begin
     reg.Free;
   end;
 end;
-
+//===================================================================================================
 function TfrmAutoGetItMain.ParseGetItName(const GetItLine: string): string;
 begin
   var space := Pos(' ', GetItLine);
   Result := LeftStr(GetItLine, space - 1);
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.ProcessCheckedPackages(GetItArgsFunc: TGetItArgsFunction);
-var
-  GetItLine: string;
-  GetItName: string;
-  count, total: Integer;
 begin
   FInstallAborted := False;
-  total := CountChecked;
-  count := 0;
+  var total := CountChecked;
+  var count := 0;
   frmInstallLog.Initialize;
-  for var i := 0 to lbPackages.Count - 1 do begin
+  for var i in [0 .. lbPackages.Count - 1] do begin
     if lbPackages.Checked[i] then begin
-      GetItLine := lbPackages.Items[i];
-      GetItName := ParseGetItName(GetItLine);
+      var GetItLine := lbPackages.Items[i];
+      var GetItName := ParseGetItName(GetItLine);
 
       Inc(count);
       frmInstallLog.ProcessGetItPackage(BDSBinDir, GetItArgsFunc(GetItName),
@@ -538,72 +508,56 @@ begin
   end;
   frmInstallLog.NotifyFinished;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.rgrpSortByClick(Sender: TObject);
-var switch_dispatch : Integer;
 begin
-    MyReProxy1.Open( myRePattern, [roIgnoreCase] );
-    MyReProxy1.ResolveForEach_old_safe( cmbRADVersions.Text );
-
-    if MyReProxy1.GroupCol.Item[1].Value = '19.0' then switch_dispatch := 1;   // BDS 19 | Delphi 10.2 Tokyo
-    if MyReProxy1.GroupCol.Item[1].Value = '20.0' then switch_dispatch := 1;   // BDS 20 | Delphi 10.3 Rio
-
-
-  if (switch_dispatch = 1) and
-     (rgrpSortBy.ItemIndex = 2) then
-  begin
-    rgrpSortBy.ItemIndex := 0;
-    ShowMessage('Sorting by Date not available with GetItCmd for RAD Studio 19 or 20');
+  case cmbParse() of
+    1:  if (rgrpSortBy.ItemIndex = 2) then  begin
+          rgrpSortBy.ItemIndex := 0;
+          ShowMessage('Sorting by Date not available with GetItCmd for RAD Studio 19 or 20') ;
+        end
   end;
 end;
-
+//===================================================================================================
 function TfrmAutoGetItMain.SelectedBDSVersion: string;
 begin
-  MyReProxy1.Open( myRePattern, [roIgnorecase]);
-  MyReProxy1.ResolveForEach_old_safe( cmbRADVersions.Text );
-
-DebugPrint( '%s',  [ MyReProxy1.GroupCol.Item[1].Value ] );
-
-  Result := MyReProxy1.GroupCol.Item[1].Value;
-
+  cmbParse() ;
+  var version := MyReProxy1.RegexGroupPath.FVals[0] ;
+  DebugPrint( '%s',  [ version.Value ] );
+  Result := version.Value;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.SetDownloadTime(const Value: Integer);
 begin
   StatusBar.Panels[1].Text := Format('%d seconds', [Value]);
   StatusBar.Update;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.SetExecLine(const Value: string);
 begin
   StatusBar.Panels[2].Text := Value;
   StatusBar.Update;
 end;
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.SetPackageCount(const Value: Integer);
 begin
   StatusBar.Panels[0].Text := Format('%d packages', [Value]);
   StatusBar.Update;
 end;
-
-
-
-
+//===================================================================================================
 procedure TfrmAutoGetItMain.StatusBarDblClick(Sender: TObject);
-var
-  LClickPos: TPoint;    LIndex: Integer;
 begin
-  LClickPos := SmallPointToPoint(TSmallPoint(GetMessagePos()));
+  var LClickPos := SmallPointToPoint(TSmallPoint(GetMessagePos()));
   LClickPos := StatusBar.ScreenToClient(LClickPos);
-  LIndex := GetPanelIndex(LClickPos);
+  var LIndex := GetPanelIndex(LClickPos);
 
-  var Comspec : string := ExpandEnvVars( '%windir%\system32\cmd.exe' );  var ErrorCode: Integer;
+  var Comspec : string := ExpandEnvVars( '%windir%\system32\cmd.exe' );       var ErrorCode: Integer;
   if 2 = LIndex then ExecuteProcess( Comspec , '/K title RADStudio', '', false, false, false, ErrorCode);
   if 3 = LIndex then begin
        var reg := TRegistry.Create;
         try
           reg.RootKey := HKEY_CURRENT_USER;
-          var SubKey := BDS_USER_ROOT + SelectedBDSVersion() + '\CatalogRepository';
+          var SubKey := BDS_USER_ROOTS + SelectedBDSVersion() + '\CatalogRepository';
           var KeyExists := reg.OpenKey( SubKey, False);
           var serviceKind := reg.ReadString('ServiceKind');
           if KeyExists and (serviceKind = 'Online') then begin
@@ -624,11 +578,10 @@ end;
 //=========================================================================================================================
 
 function  TfrmAutoGetItMain.GetPanelIndex( Point: TPoint ): Integer;
-var
-  I: Integer;    LRect: TRect;
 begin
-  For I := 0 to StatusBar.Panels.Count - 1 do    begin
-    if SendMessage(StatusBar.Handle, SB_GETRECT, I, LPARAM(@LRect)) <> 0 then begin
+  var LRect: TRect;
+  For var I in [0 .. StatusBar.Panels.Count - 1] do    begin
+    if 0 <> SendMessage(StatusBar.Handle, SB_GETRECT, I, LPARAM(@LRect))  then begin
       if PtInRect(LRect, Point) then
         Exit(I);
     end;

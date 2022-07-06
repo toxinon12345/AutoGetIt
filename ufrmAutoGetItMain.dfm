@@ -27,9 +27,9 @@ object frmAutoGetItMain: TfrmAutoGetItMain
       914
       89)
     object Label1: TLabel
-      Left = 501
+      Left = 511
       Top = 22
-      Width = 163
+      Width = 153
       Height = 16
       Alignment = taRightJustify
       Anchors = [akTop, akRight]
@@ -93,6 +93,7 @@ object frmAutoGetItMain: TfrmAutoGetItMain
       Style = csDropDownList
       Anchors = [akTop, akRight]
       TabOrder = 1
+      OnSelect = cmbRADVersionsSelect
     end
     object rgrpSortBy: TRadioGroup
       Left = 183
